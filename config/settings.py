@@ -42,6 +42,8 @@ INSTALLED_APPS = [
     'master',
     'usermanagement',
     'feeder',
+    'debtors',
+    'clientmaster',
 ]
 
 MIDDLEWARE = [

@@ -49,3 +49,8 @@ class Country(BaseModel):
 class SP(BaseModel):
     class Meta(BaseModel.Meta):
         db_table = "master_sp"
+
+
+class Corporate(BaseModel):
+    class Meta(BaseModel.Meta):
+        db_table = "master_corporate"

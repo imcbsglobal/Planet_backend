@@ -10,5 +10,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/master/', include('master.urls')),
     path("api/usermanagement/", include("usermanagement.urls")),
-   path("api/feeder/", include("feeder.urls")),
+    path("api/feeder/", include("feeder.urls")),
+    path("debtors/", include("debtors.urls")),
+    path('api/clientmaster/', include('clientmaster.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
