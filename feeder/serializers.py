@@ -6,7 +6,7 @@ class FeederSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Feeder
         fields = "__all__"
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "unique_code", "created_at", "updated_at"]
 
     # Map camelCase keys from the React form → snake_case model fields
     # so the frontend can POST with its own field names directly.
@@ -58,5 +58,6 @@ class FeederSerializer(serializers.ModelSerializer):
             "adm_status":      "admStatus",
             "created_at":      "createdAt",
             "updated_at":      "updatedAt",
+            "unique_code":     "uniqueCode",
         }
         return {snake_to_camel.get(k, k): v for k, v in rep.items()}

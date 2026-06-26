@@ -1,3 +1,4 @@
+import uuid
 from django.db import models
 
 
@@ -14,6 +15,9 @@ class Feeder(models.Model):
         ("Rejected", "Rejected"),
         ("Verified", "Verified"),
     ]
+
+    # Unique key (auto-generated on creation)
+    unique_code     = models.CharField(max_length=20, unique=True, blank=True, null=True)
 
     # Primary Details
     name            = models.CharField(max_length=255)
@@ -50,6 +54,12 @@ class Feeder(models.Model):
     class Meta:
         db_table = "feeder"
         ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        if not self.unique_code:
+            # Generate a short unique code like FDR-A1B2C3D4
+            self.unique_code = uuid.uuid4().hex[:8].upper()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
