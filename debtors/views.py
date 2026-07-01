@@ -10,8 +10,22 @@ ACC_DEPT_URL   = "https://accmaster.imcbs.com/api/sync/acc-departments/"
 BRANCH_CLIENT_IDS = {
     'Sysmac Computers': 'GW9Q6NQQ5ONRU',
     'Sysmac Info':      '69ZHSXOIMFA6T',
-    'IMCB LLP':         'G9SYCSM54HR3Ev',
+    'IMCB LLP':         'G9SYCSM54HR3E',
 }
+
+
+def _clean(value):
+    """
+    Normalize client_id / code values before comparing them.
+
+    The accmaster feeds are known to carry backtick artifacts and
+    inconsistent casing (same issue seen on department codes/names).
+    Comparing raw strings can either drop valid ledger rows or, worse,
+    let a differently-formatted-but-coincidentally-equal code slip
+    through as a match for the wrong debtor. Always compare cleaned
+    values on both sides.
+    """
+    return str(value or '').replace('`', '').strip().upper()
 
 
 def acc_client_search(request):
@@ -111,6 +125,56 @@ def acc_client_search(request):
 
     clients.sort(key=lambda x: x['name'].lower())
     return JsonResponse({'clients': clients})
+
+
+def get_sysmac_info_ledger(request):
+    """
+    GET /debtors/get-sysmac-info-ledger/?code=<code>
+
+    Returns a raw list of ledger entries for a Sysmac Info debtor, filtered
+    by client_id + code from the shared acc-ledgers feed. Field names match
+    what LedgerContent (sysmacinfo_list.jsx) already expects: entry_date,
+    voucher_no, particulars, narration, debit, credit.
+    """
+    CLIENT_ID = '69ZHSXOIMFA6T'   # Sysmac Info
+    ledger_api_url = "https://accmaster.imcbs.com/api/sync/acc-ledgers/"
+
+    code = _clean(request.GET.get('code', ''))
+    if not code:
+        return JsonResponse({'error': 'code parameter is required'}, status=400)
+
+    try:
+        response = requests.get(ledger_api_url, timeout=30)
+        response.raise_for_status()
+        json_data = response.json()
+        raw_data = json_data if isinstance(json_data, list) else json_data.get('data', [])
+    except requests.exceptions.Timeout:
+        return JsonResponse({'error': 'API request timed out'}, status=502)
+    except requests.exceptions.ConnectionError:
+        return JsonResponse({'error': 'Could not connect to API'}, status=502)
+    except requests.exceptions.HTTPError as e:
+        return JsonResponse({'error': f'HTTP Error: {e}'}, status=502)
+    except Exception as e:
+        return JsonResponse({'error': f'Error fetching ledger: {str(e)}'}, status=502)
+
+    entries = []
+    for item in raw_data:
+        if _clean(item.get('client_id', '')) != _clean(CLIENT_ID):
+            continue
+        if _clean(item.get('code', '')) != code:
+            continue
+
+        entries.append({
+            'entry_date':  item.get('date', '') or '',
+            'voucher_no':  item.get('voucher_no', '') or '',
+            'particulars': (item.get('particulars', '') or '').strip(),
+            'narration':   (item.get('narration', '') or '').strip(),
+            'debit':       float(item.get('debit') or 0),
+            'credit':      float(item.get('credit') or 0),
+        })
+
+    entries.sort(key=lambda x: (x['entry_date'], x['voucher_no']))
+    return JsonResponse(entries, safe=False)
 
 
 def sysmac_info_list(request):
@@ -251,8 +315,64 @@ def sysmac_info_list(request):
     })
 
 
+def get_imc1_ledger(request):
+    """
+    GET /debtors/get-imc1-ledger/?code=<code>
+
+    Returns a raw list of ledger entries for an IMCB LLP debtor, filtered
+    by client_id + code from the shared acc-ledgers feed. Same entry shape
+    as get_sysmac_info_ledger: entry_date, voucher_no, particulars,
+    narration, debit, credit.
+
+    NOTE: BRANCH_CLIENT_IDS['IMCB LLP'] is 'G9SYCSM54HR3E' (trailing 'v'),
+    but a sample of the live ledger feed showed entries tagged
+    'G9SYCSM54HR3E' (no trailing 'v'). If IMCB ledger rows come back empty,
+    check the real client_id value in the ledger feed and adjust CLIENT_ID
+    below to match — don't assume it's identical to imc1_list's constant.
+    """
+    CLIENT_ID = 'G9SYCSM54HR3E'   # IMCB LLP — verify against live ledger feed if empty
+    ledger_api_url = "https://accmaster.imcbs.com/api/sync/acc-ledgers/"
+
+    code = _clean(request.GET.get('code', ''))
+    if not code:
+        return JsonResponse({'error': 'code parameter is required'}, status=400)
+
+    try:
+        response = requests.get(ledger_api_url, timeout=30)
+        response.raise_for_status()
+        json_data = response.json()
+        raw_data = json_data if isinstance(json_data, list) else json_data.get('data', [])
+    except requests.exceptions.Timeout:
+        return JsonResponse({'error': 'API request timed out'}, status=502)
+    except requests.exceptions.ConnectionError:
+        return JsonResponse({'error': 'Could not connect to API'}, status=502)
+    except requests.exceptions.HTTPError as e:
+        return JsonResponse({'error': f'HTTP Error: {e}'}, status=502)
+    except Exception as e:
+        return JsonResponse({'error': f'Error fetching ledger: {str(e)}'}, status=502)
+
+    entries = []
+    for item in raw_data:
+        if _clean(item.get('client_id', '')) != _clean(CLIENT_ID):
+            continue
+        if _clean(item.get('code', '')) != code:
+            continue
+
+        entries.append({
+            'entry_date':  item.get('date', '') or '',
+            'voucher_no':  item.get('voucher_no', '') or '',
+            'particulars': (item.get('particulars', '') or '').strip(),
+            'narration':   (item.get('narration', '') or '').strip(),
+            'debit':       float(item.get('debit') or 0),
+            'credit':      float(item.get('credit') or 0),
+        })
+
+    entries.sort(key=lambda x: (x['entry_date'], x['voucher_no']))
+    return JsonResponse(entries, safe=False)
+
+
 def imc1_list(request):
-    CLIENT_ID = 'G9SYCSM54HR3Ev'
+    CLIENT_ID = 'G9SYCSM54HR3E'
     api_url = "https://accmaster.imcbs.com/api/sync/acc-master/"
     dept_url = "https://accmaster.imcbs.com/api/sync/acc-departments/"
     data = []
@@ -385,6 +505,82 @@ def imc1_list(request):
         'current_page': page_obj.number,
         'num_pages': paginator.num_pages,
         'selected_rows': selected_rows_int,
+    })
+
+
+def get_ledger(request):
+    """
+    GET /debtors/get-ledger/?code=<code>
+
+    Returns full ledger entries (raw transaction lines) for a single
+    Sysmac Computers debtor, identified by their debtor `code`, pulled
+    from the shared acc-ledgers feed and filtered to this client_id + code.
+
+    Response:
+        {
+            code, ledger: [ { date, particulars, entry_mode, voucher_no,
+                               narration, debit, credit, running_balance }, ... ],
+            total_debit, total_credit, closing_balance
+        }
+    """
+    CLIENT_ID = 'GW9Q6NQQ5ONRU'   # Sysmac Computers
+    ledger_api_url = "https://accmaster.imcbs.com/api/sync/acc-ledgers/"
+
+    code = _clean(request.GET.get('code', ''))
+    if not code:
+        return JsonResponse({'error': 'code parameter is required', 'ledger': []}, status=400)
+
+    try:
+        response = requests.get(ledger_api_url, timeout=30)
+        response.raise_for_status()
+        json_data = response.json()
+        raw_data = json_data if isinstance(json_data, list) else json_data.get('data', [])
+    except requests.exceptions.Timeout:
+        return JsonResponse({'error': 'API request timed out', 'ledger': []}, status=502)
+    except requests.exceptions.ConnectionError:
+        return JsonResponse({'error': 'Could not connect to API', 'ledger': []}, status=502)
+    except requests.exceptions.HTTPError as e:
+        return JsonResponse({'error': f'HTTP Error: {e}', 'ledger': []}, status=502)
+    except Exception as e:
+        return JsonResponse({'error': f'Error fetching ledger: {str(e)}', 'ledger': []}, status=502)
+
+    entries = []
+    for item in raw_data:
+        if _clean(item.get('client_id', '')) != _clean(CLIENT_ID):
+            continue
+        if _clean(item.get('code', '')) != code:
+            continue
+
+        debit = float(item.get('debit') or 0)
+        credit = float(item.get('credit') or 0)
+
+        entries.append({
+            'date':        item.get('date', '') or '',
+            'particulars': (item.get('particulars', '') or '').strip(),
+            'entry_mode':  item.get('entry_mode', '') or '',
+            'voucher_no':  item.get('voucher_no', '') or '',
+            'narration':   (item.get('narration', '') or '').strip(),
+            'debit':       debit,
+            'credit':      credit,
+        })
+
+    # Chronological order, then compute a running balance
+    entries.sort(key=lambda x: (x['date'], x['voucher_no']))
+
+    running = 0.0
+    for e in entries:
+        running += e['debit'] - e['credit']
+        e['running_balance'] = running
+
+    total_debit = sum(e['debit'] for e in entries)
+    total_credit = sum(e['credit'] for e in entries)
+
+    return JsonResponse({
+        'code': code,
+        'ledger': entries,
+        'total_debit': total_debit,
+        'total_credit': total_credit,
+        'closing_balance': running,
     })
 
 

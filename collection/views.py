@@ -24,7 +24,7 @@ ACC_DEPT_API_URL = 'https://accmaster.imcbs.com/api/sync/acc-departments/'
 COMPANY_CLIENT_IDS = {
     'Sysmac Computers': 'GW9Q6NQQ5ONRU',
     'Sysmac Info':      '69ZHSXOIMFA6T',
-    'IMCB LLP':         'G9SYCSM54HR3Ev',
+    'IMCB LLP':         'G9SYCSM54HR3E',
 }
 
 # In-process cache — key '__all__' for dept map, company name for clients
