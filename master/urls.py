@@ -1,7 +1,8 @@
 from rest_framework.routers import DefaultRouter
 from .views import (
     BranchViewSet, SoftwareViewSet, BusinessNatureViewSet,
-    DistrictViewSet, StateViewSet, CountryViewSet, SPViewSet, CorporateViewSet,
+    DistrictViewSet, StateViewSet, CountryViewSet, SPViewSet,
+    CorporateViewSet, ModuleViewSet,
 )
 
 router = DefaultRouter()
@@ -13,5 +14,6 @@ router.register(r"state",           StateViewSet,           basename="state")
 router.register(r"country",         CountryViewSet,         basename="country")
 router.register(r"sp",              SPViewSet,              basename="sp")
 router.register(r"corporate",       CorporateViewSet,       basename="corporate")
+router.register(r"module",          ModuleViewSet,          basename="module")
 
 urlpatterns = router.urls

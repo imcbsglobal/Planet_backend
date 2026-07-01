@@ -84,6 +84,27 @@ def _resolve_fk_fields(row):
     return row, field_warnings
 
 
+def _get_username_from_request(request):
+    """
+    Extract the logged-in username from the custom Bearer token.
+    Token format: 'Bearer local_{user_id}_{username}'
+    Falls back to any client-supplied value, then 'Unknown'.
+    """
+    auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+    if auth_header.startswith("Bearer local_"):
+        remainder = auth_header[len("Bearer local_"):]  # "{id}_{username}"
+        _, _, uname = remainder.partition("_")           # skip id, keep username
+        if uname:
+            return uname
+    # superuser token is just "Bearer superuser" — try to get from UserProfile
+    if auth_header == "Bearer superuser":
+        from usermanagement.models import UserProfile
+        su = UserProfile.objects.filter(role__iexact="Super Admin").first()
+        if su:
+            return su.username
+    return ""
+
+
 class ClientMasterViewSet(viewsets.ModelViewSet):
     queryset = ClientMaster.objects.select_related(
         "branch", "corporate", "district", "state", "country",
@@ -91,6 +112,16 @@ class ClientMasterViewSet(viewsets.ModelViewSet):
     ).all()
     serializer_class   = ClientMasterSerializer
     permission_classes = [AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        """Override to auto-set created_by from the request token."""
+        data = request.data.copy()
+        if not data.get("created_by"):
+            data["created_by"] = _get_username_from_request(request) or data.get("created_by") or ""
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["post"], url_path="bulk-import",
             permission_classes=[AllowAny])

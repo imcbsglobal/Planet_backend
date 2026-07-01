@@ -1,329 +1,544 @@
 import requests
-import traceback
+from django.core.paginator import Paginator, PageNotAnInteger, EmptyPage
 from django.http import JsonResponse
-from django.views.decorators.http import require_GET
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-ACC_MASTER_URL  = "https://accmaster.imcbs.com/api/sync/acc-master/"
-ACC_DEPT_URL    = "https://accmaster.imcbs.com/api/sync/acc-departments/"
-ACC_LEDGER_URL  = "https://accmaster.imcbs.com/api/sync/acc-ledger/"
-ACC_BILLS_URL   = "https://accmaster.imcbs.com/api/sync/acc-bills/"
+ACC_MASTER_URL = "https://accmaster.imcbs.com/api/sync/acc-master/"
+ACC_DEPT_URL   = "https://accmaster.imcbs.com/api/sync/acc-departments/"
 
-# Debtors module
-DEBTORS_CLIENT_ID  = "GW9Q6NQQ5ONRU"
-DEBTORS_SUPER_CODE = "DEBTO"
-
-# Sysmac Info module
-SYSMAC_CLIENT_ID   = "69ZHSXOIMFA6T"
-SYSMAC_SUPER_CODE  = "DEBTO"
-
-# IMC1 module
-IMC1_CLIENT_ID   = "G9SYCSM54HR3Ev"
-IMC1_SUPER_CODE  = "DEBTO"
+# Map branch name → client_id used by accmaster
+BRANCH_CLIENT_IDS = {
+    'Sysmac Computers': 'GW9Q6NQQ5ONRU',
+    'Sysmac Info':      '69ZHSXOIMFA6T',
+    'IMCB LLP':         'G9SYCSM54HR3Ev',
+}
 
 
-# ── Shared helpers ─────────────────────────────────────────────────────────────
-def _fetch_dept_map(client_id):
-    """Returns {department_id: department_name} filtered by client_id."""
+def acc_client_search(request):
+    """
+    Unified endpoint for the Account-Link client search UI.
+
+    GET /debtors/acc-client-search/
+        → { branches: ["Sysmac Computers", "Sysmac Info", "IMCB LLP"] }
+
+    GET /debtors/acc-client-search/?branch=<name>
+        → { departments: [{ id, name }, ...] }
+
+    GET /debtors/acc-client-search/?branch=<name>&department=<id>&q=<search>
+        → { clients: [{ code, name, place, phone2, balance, department_name }, ...] }
+    """
+    branch     = request.GET.get('branch',     '').strip()
+    department = request.GET.get('department', '').strip()
+    q          = request.GET.get('q',          '').strip().lower()
+
+    # ── 1. No branch → return branch list ────────────────────────────────────
+    if not branch:
+        return JsonResponse({'branches': list(BRANCH_CLIENT_IDS.keys())})
+
+    client_id = BRANCH_CLIENT_IDS.get(branch)
+    if not client_id:
+        return JsonResponse({'error': f'Unknown branch: {branch}'}, status=400)
+
+    # ── 2. Branch only → return department list ───────────────────────────────
+    if not department:
+        try:
+            resp = requests.get(ACC_DEPT_URL, timeout=15)
+            resp.raise_for_status()
+            all_depts = resp.json() if isinstance(resp.json(), list) else []
+            depts = sorted(
+                [
+                    {'id': d['department_id'], 'name': d['department']}
+                    for d in all_depts
+                    if str(d.get('client_id', '')).strip().upper() == client_id.strip().upper()
+                       and d.get('department_id') and d.get('department')
+                ],
+                key=lambda x: x['name'],
+            )
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=502)
+        return JsonResponse({'departments': depts})
+
+    # ── 3. Branch + department → return filtered client list ──────────────────
+    # Build dept_map for name resolution
     dept_map = {}
     try:
-        resp = requests.get(ACC_DEPT_URL, timeout=30)
+        resp = requests.get(ACC_DEPT_URL, timeout=15)
         resp.raise_for_status()
-        raw = resp.json()
-        dept_list = raw if isinstance(raw, list) else raw.get("data", [])
-        for dept in dept_list:
-            if str(dept.get("client_id", "")) != client_id:
-                continue
-            dept_id = str(dept.get("department_id", "")).strip()
-            name    = str(dept.get("department", "")).strip()
-            if dept_id and name:
-                dept_map[dept_id] = name
+        for d in (resp.json() if isinstance(resp.json(), list) else []):
+            if str(d.get('client_id', '')).strip().upper() == client_id.strip().upper():
+                dept_map[str(d.get('department_id', '')).strip()] = str(d.get('department', '')).strip()
     except Exception:
         pass
-    return dept_map
 
+    try:
+        resp = requests.get(ACC_MASTER_URL, timeout=30)
+        resp.raise_for_status()
+        raw = resp.json() if isinstance(resp.json(), list) else []
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=502)
 
-def _fetch_debtors_for_client(client_id, super_code, dept_map):
-    """Fetches all debtor records for a given client_id/super_code, adds balance + dept name."""
-    data = []
-    resp = requests.get(ACC_MASTER_URL, timeout=30)
-    resp.raise_for_status()
-    raw = resp.json()
-    records = raw if isinstance(raw, list) else raw.get("data", [])
-
-    for item in records:
-        if str(item.get("client_id", "")) != client_id:
+    clients = []
+    for item in raw:
+        if str(item.get('client_id', '')).strip().upper() != client_id.strip().upper():
             continue
-        if str(item.get("super_code", "")) != super_code:
+        if str(item.get('super_code', '')) != 'DEBTO':
+            continue
+        dept_id = str(item.get('openingdepartment', '') or '').strip()
+        if dept_id != department:
             continue
 
-        item["name"]    = item.get("name", "").strip()
-        debit           = float(item.get("debit")  or 0)
-        credit          = float(item.get("credit") or 0)
-        item["balance"] = debit - credit
+        debit  = float(item.get('debit')  or 0)
+        credit = float(item.get('credit') or 0)
+        balance = debit - credit
 
-        dept_id                 = str(item.get("openingdepartment", "") or "").strip()
-        item["department_name"] = dept_map.get(dept_id, dept_id)
-        data.append(item)
+        row = {
+            'code':            item.get('code', ''),
+            'name':            item.get('name', '').strip(),
+            'place':           item.get('place', ''),
+            'phone2':          item.get('phone2', ''),
+            'balance':         balance,
+            'department_name': dept_map.get(dept_id, dept_id),
+        }
 
-    return data
-
-
-def _apply_filters_and_paginate(request, data, dept_map):
-    """
-    Shared filter + pagination logic.
-    Returns a JsonResponse dict (without wrapping in JsonResponse yet).
-    """
-    query               = request.GET.get("q", "").strip()
-    min_balance         = request.GET.get("min_balance", "1")
-    selected_department = request.GET.get("department", "")
-    selected_rows       = request.GET.get("rows", "15")
-    page                = request.GET.get("page", "1")
-
-    # Search filter
-    if query:
-        terms = query.lower().split()
-        filtered = []
-        for item in data:
-            text = " ".join([
-                str(item.get("code", "")),
-                str(item.get("name", "")),
-                str(item.get("place", "")),
-                str(item.get("phone2", "")),
-                str(item.get("department_name", "")),
-                str(item.get("openingdepartment", "")),
+        if q:
+            searchable = ' '.join([
+                row['code'], row['name'], row['place'], row['phone2'],
             ]).lower()
-            if all(t in text for t in terms):
-                filtered.append(item)
-        data = filtered
+            if q not in searchable:
+                continue
 
-    # Department filter
-    if selected_department:
-        data = [i for i in data if i.get("openingdepartment", "") == selected_department]
+        clients.append(row)
 
-    # Min balance filter
-    if min_balance:
-        try:
-            min_val = float(min_balance)
-            data = [i for i in data if float(i.get("balance") or 0) >= min_val]
-        except ValueError:
-            pass
+    clients.sort(key=lambda x: x['name'].lower())
+    return JsonResponse({'clients': clients})
 
-    # Sort by name
-    data.sort(key=lambda x: x.get("name", "").lower())
 
-    # Totals (before pagination)
-    total_balance = sum(float(i.get("balance") or 0) for i in data)
-    total_debit   = sum(float(i.get("debit")   or 0) for i in data)
-    total_credit  = sum(float(i.get("credit")  or 0) for i in data)
+def sysmac_info_list(request):
+    CLIENT_ID = '69ZHSXOIMFA6T'
+    api_url = "https://accmaster.imcbs.com/api/sync/acc-master/"
+    dept_url = "https://accmaster.imcbs.com/api/sync/acc-departments/"
+    data = []
+    error_message = None
 
-    # Pagination
+    # ✅ Fetch department lookup: department_id → department name
+    dept_map = {}
     try:
-        rows = int(selected_rows)
-        if rows not in [10, 15, 20, 25, 50, 100, 200]:
-            rows = 15
-    except ValueError:
-        rows = 15
+        dept_response = requests.get(dept_url, timeout=30)
+        dept_response.raise_for_status()
+        for dept in dept_response.json():
+            if str(dept.get('client_id', '')) == CLIENT_ID:
+                dept_map[str(dept['department_id'])] = dept['department']
+    except Exception:
+        pass
 
     try:
-        page_num = int(page)
-        if page_num < 1:
-            page_num = 1
-    except ValueError:
-        page_num = 1
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        raw_data = response.json()
 
-    total_count = len(data)
-    start = (page_num - 1) * rows
-    end   = start + rows
-    page_data = data[start:end]
+        for item in raw_data:
+            if str(item.get('client_id', '')) != CLIENT_ID:
+                continue
+            if str(item.get('super_code', '')) != 'DEBTO':
+                continue
 
-    # Department list for dropdown
+            item['name'] = item.get('name', '').strip()
+
+            debit = float(item.get('debit') or 0)
+            credit = float(item.get('credit') or 0)
+            item['balance'] = debit - credit
+
+            # ✅ Resolve department name from ID
+            dept_id = str(item.get('openingdepartment', '') or '')
+            item['openingdepartment'] = dept_id
+            item['department_name'] = dept_map.get(dept_id, dept_id)
+
+            data.append(item)
+
+    except requests.exceptions.Timeout:
+        error_message = "API request timed out"
+    except requests.exceptions.ConnectionError:
+        error_message = "Could not connect to API"
+    except requests.exceptions.HTTPError as e:
+        error_message = f"HTTP Error: {e}"
+    except Exception as e:
+        error_message = f"Error fetching data: {str(e)}"
+
+    if error_message:
+        return JsonResponse({'error': error_message, 'results': [], 'departments': []}, status=502)
+
+    # Filters
+    query = request.GET.get('q', '').strip()
+    min_balance = request.GET.get('min_balance', '1')
+    selected_department = request.GET.get('department', '')
+    selected_rows = request.GET.get('rows', '15')
+
+    original_count = len(data)
+
+    # ✅ Department dropdown built from dept API, as [id, name] pairs
     department_list = sorted(
         [[dept_id, name] for dept_id, name in dept_map.items()],
         key=lambda x: x[1]
     )
 
-    # Serialise only needed fields
-    results = []
-    for item in page_data:
-        results.append({
-            "code":              item.get("code", ""),
-            "name":              item.get("name", ""),
-            "place":             item.get("place", ""),
-            "phone2":            item.get("phone2", ""),
-            "opening_balance":   item.get("opening_balance", 0),
-            "debit":             item.get("debit", 0),
-            "credit":            item.get("credit", 0),
-            "balance":           item.get("balance", 0),
-            "department_name":   item.get("department_name", ""),
-            "openingdepartment": item.get("openingdepartment", ""),
-        })
+    # Search filter
+    if query:
+        search_terms = query.lower().split()
+        filtered_data = []
+        for item in data:
+            searchable_fields = [
+                str(item.get('code', '')),
+                str(item.get('name', '')),
+                str(item.get('place', '')),
+                str(item.get('phone2', '')),
+                str(item.get('opening_balance', '')),
+                str(item.get('debit', '')),
+                str(item.get('credit', '')),
+                str(item.get('balance', '')),
+                str(item.get('department_name', '')),
+            ]
+            combined_text = ' '.join(searchable_fields).lower()
+            if all(term in combined_text for term in search_terms):
+                filtered_data.append(item)
+        data = filtered_data
 
-    return {
-        "results":       results,
-        "departments":   department_list,
-        "total_balance": round(total_balance, 2),
-        "total_debit":   round(total_debit,   2),
-        "total_credit":  round(total_credit,  2),
-        "total_count":   total_count,
-        "page":          page_num,
-        "rows":          rows,
-        "total_pages":   -(-total_count // rows),
-    }
+    # Department filter (by id)
+    if selected_department:
+        data = [item for item in data if item.get('openingdepartment', '') == selected_department]
 
+    # Minimum balance filter
+    if min_balance:
+        try:
+            min_balance_value = float(min_balance)
+            data = [item for item in data if float(item.get('balance') or 0) >= min_balance_value]
+        except ValueError:
+            pass
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Debtors module  (/debtors/…)
-# ══════════════════════════════════════════════════════════════════════════════
+    # Sort and Totals
+    data.sort(key=lambda x: x.get('name', '').lower())
+    total_balance = sum(float(item.get('balance') or 0) for item in data)
+    total_debit = sum(float(item.get('debit') or 0) for item in data)
+    total_credit = sum(float(item.get('credit') or 0) for item in data)
 
-@require_GET
-def debtors1_list(request):
-    """
-    GET /debtors/debtors1-list/
-    Query params: q, min_balance, department, rows, page
-    """
+    # Handle row count
     try:
-        dept_map = _fetch_dept_map(DEBTORS_CLIENT_ID)
-        data     = _fetch_debtors_for_client(DEBTORS_CLIENT_ID, DEBTORS_SUPER_CODE, dept_map)
-    except requests.exceptions.Timeout:
-        return JsonResponse({"error": "API request timed out"}, status=504)
-    except requests.exceptions.ConnectionError:
-        return JsonResponse({"error": "Could not connect to API"}, status=502)
-    except Exception as e:
-        traceback.print_exc()
-        return JsonResponse({"error": str(e)}, status=500)
+        selected_rows_int = int(selected_rows)
+        if selected_rows_int not in [10, 15, 20, 25, 50, 100, 200]:
+            selected_rows_int = 15
+    except ValueError:
+        selected_rows_int = 15
 
-    return JsonResponse(_apply_filters_and_paginate(request, data, dept_map))
-
-
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Sysmac Info module  (/sysmac-info/…)
-# ══════════════════════════════════════════════════════════════════════════════
-
-@require_GET
-def sysmac_info_list(request):
-    """
-    GET /sysmac-info/sysmac-info-list/
-    Query params: q, min_balance, department, rows, page
-    """
+    paginator = Paginator(data, selected_rows_int)
+    page = request.GET.get('page')
     try:
-        dept_map = _fetch_dept_map(SYSMAC_CLIENT_ID)
-        data     = _fetch_debtors_for_client(SYSMAC_CLIENT_ID, SYSMAC_SUPER_CODE, dept_map)
-    except requests.exceptions.Timeout:
-        return JsonResponse({"error": "API request timed out"}, status=504)
-    except requests.exceptions.ConnectionError:
-        return JsonResponse({"error": "Could not connect to API"}, status=502)
-    except Exception as e:
-        traceback.print_exc()
-        return JsonResponse({"error": str(e)}, status=500)
+        page_obj = paginator.page(page)
+    except PageNotAnInteger:
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
 
-    return JsonResponse(_apply_filters_and_paginate(request, data, dept_map))
+    return JsonResponse({
+        'results': list(page_obj.object_list),
+        'departments': department_list,
+        'total_records': original_count,
+        'filtered_count': len(data),
+        'total_balance': total_balance,
+        'total_debit': total_debit,
+        'total_credit': total_credit,
+        'current_page': page_obj.number,
+        'num_pages': paginator.num_pages,
+        'selected_rows': selected_rows_int,
+    })
 
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# IMC1 module  (/imc1/…)
-# ══════════════════════════════════════════════════════════════════════════════
-
-@require_GET
 def imc1_list(request):
-    """
-    GET /imc1/imc1-list/
-    Query params: q, min_balance, department, rows, page
-    """
-    try:
-        dept_map = _fetch_dept_map(IMC1_CLIENT_ID)
-        data     = _fetch_debtors_for_client(IMC1_CLIENT_ID, IMC1_SUPER_CODE, dept_map)
-    except requests.exceptions.Timeout:
-        return JsonResponse({"error": "API request timed out"}, status=504)
-    except requests.exceptions.ConnectionError:
-        return JsonResponse({"error": "Could not connect to API"}, status=502)
-    except Exception as e:
-        traceback.print_exc()
-        return JsonResponse({"error": str(e)}, status=500)
+    CLIENT_ID = 'G9SYCSM54HR3Ev'
+    api_url = "https://accmaster.imcbs.com/api/sync/acc-master/"
+    dept_url = "https://accmaster.imcbs.com/api/sync/acc-departments/"
+    data = []
+    error_message = None
 
-    return JsonResponse(_apply_filters_and_paginate(request, data, dept_map))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Account Link Client Search  (/debtors/acc-client-search/)
-# ══════════════════════════════════════════════════════════════════════════════
-
-# All known client_ids mapped to their branch name
-ACC_CLIENTS = {
-    "GW9Q6NQQ5ONRU": "Sysmac Computers",
-    "69ZHSXOIMFA6T": "Sysmac Info",
-    "G9SYCSM54HR3Ev": "IMCB LLB",
-}
-
-
-@require_GET
-def acc_client_search(request):
-    """
-    GET /debtors/acc-client-search/
-    Query params:
-      branch      – client_id key (e.g. GW9Q6NQQ5ONRU)
-      department  – department_id to filter by (optional)
-      q           – search term for client name / code (optional)
-    Returns: { branches, departments, clients }
-    """
-    branch_id  = request.GET.get("branch", "").strip()
-    dept_id    = request.GET.get("department", "").strip()
-    q          = request.GET.get("q", "").strip().lower()
-
-    # ── Branch list (static, from known clients) ──────────────────────────────
-    branch_list = [{"id": k, "name": v} for k, v in ACC_CLIENTS.items()]
-
-    if not branch_id:
-        return JsonResponse({"branches": branch_list, "departments": [], "clients": []})
-
-    # ── Department list for selected branch ───────────────────────────────────
+    # ✅ Fetch department lookup: department_id → department name
     dept_map = {}
     try:
-        resp = requests.get(ACC_DEPT_URL, timeout=30)
-        resp.raise_for_status()
-        raw = resp.json()
-        dept_list = raw if isinstance(raw, list) else raw.get("data", [])
-        for dept in dept_list:
-            if str(dept.get("client_id", "")) != branch_id:
-                continue
-            did  = str(dept.get("department_id", "")).strip()
-            name = str(dept.get("department", "")).strip()
-            if did and name:
-                dept_map[did] = name
+        dept_response = requests.get(dept_url, timeout=30)
+        dept_response.raise_for_status()
+        for dept in dept_response.json():
+            if str(dept.get('client_id', '')) == CLIENT_ID:
+                dept_map[str(dept['department_id'])] = dept['department']
     except Exception:
         pass
 
-    departments = sorted(
-        [{"id": k, "name": v} for k, v in dept_map.items()],
-        key=lambda x: x["name"]
+    try:
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        raw_data = response.json()
+
+        for item in raw_data:
+            if str(item.get('client_id', '')) != CLIENT_ID:
+                continue
+            if str(item.get('super_code', '')) != 'DEBTO':
+                continue
+
+            item['name'] = item.get('name', '').strip()
+
+            debit = float(item.get('debit') or 0)
+            credit = float(item.get('credit') or 0)
+            item['balance'] = debit - credit
+
+            # ✅ Resolve department name from ID
+            dept_id = str(item.get('openingdepartment', '') or '')
+            item['openingdepartment'] = dept_id
+            item['department_name'] = dept_map.get(dept_id, dept_id)
+
+            data.append(item)
+
+    except requests.exceptions.Timeout:
+        error_message = "API request timed out"
+    except requests.exceptions.ConnectionError:
+        error_message = "Could not connect to API"
+    except requests.exceptions.HTTPError as e:
+        error_message = f"HTTP Error: {e}"
+    except Exception as e:
+        error_message = f"Error fetching data: {str(e)}"
+
+    if error_message:
+        return JsonResponse({'error': error_message, 'results': [], 'departments': []}, status=502)
+
+    # Query params
+    query = request.GET.get('q', '').strip()
+    min_balance = request.GET.get('min_balance', '1')
+    selected_department = request.GET.get('department', '').strip()
+    selected_rows = request.GET.get('rows', '15')
+
+    original_count = len(data)
+
+    # ✅ Department dropdown built from dept API, as [id, name] pairs
+    department_list = sorted(
+        [[dept_id, name] for dept_id, name in dept_map.items()],
+        key=lambda x: x[1]
     )
 
-    if not dept_id:
-        return JsonResponse({"branches": branch_list, "departments": departments, "clients": []})
+    # Filter by search
+    if query:
+        search_terms = query.lower().split()
+        filtered_data = []
+        for item in data:
+            searchable_fields = [
+                str(item.get('code', '')),
+                str(item.get('name', '')),
+                str(item.get('place', '')),
+                str(item.get('phone2', '')),
+                str(item.get('opening_balance', '')),
+                str(item.get('debit', '')),
+                str(item.get('credit', '')),
+                str(item.get('balance', '')),
+                str(item.get('department_name', '')),
+            ]
+            combined_text = ' '.join(searchable_fields).lower()
+            if all(term in combined_text for term in search_terms):
+                filtered_data.append(item)
+        data = filtered_data
 
-    # ── Client list for selected branch + department ──────────────────────────
-    clients = []
+    # Filter by min balance
+    if min_balance:
+        try:
+            min_balance_value = float(min_balance)
+            data = [item for item in data if float(item.get('balance') or 0) >= min_balance_value]
+        except ValueError:
+            pass
+
+    # Filter by department id
+    if selected_department:
+        data = [item for item in data if item.get('openingdepartment', '') == selected_department]
+
+    data.sort(key=lambda x: x.get('name', '').lower())
+
+    total_balance = sum(float(item.get('balance') or 0) for item in data)
+    total_debit = sum(float(item.get('debit') or 0) for item in data)
+    total_credit = sum(float(item.get('credit') or 0) for item in data)
+
     try:
-        resp = requests.get(ACC_MASTER_URL, timeout=30)
-        resp.raise_for_status()
-        raw = resp.json()
-        records = raw if isinstance(raw, list) else raw.get("data", [])
-        for item in records:
-            if str(item.get("client_id", "")) != branch_id:
-                continue
-            if str(item.get("openingdepartment", "")).strip() != dept_id:
-                continue
-            name = str(item.get("name", "")).strip()
-            code = str(item.get("code", "")).strip()
-            if q and q not in name.lower() and q not in code.lower():
-                continue
-            clients.append({"code": code, "name": name})
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        selected_rows_int = int(selected_rows)
+        if selected_rows_int not in [10, 15, 20, 25, 50, 100, 200]:
+            selected_rows_int = 15
+    except ValueError:
+        selected_rows_int = 15
 
-    clients.sort(key=lambda x: x["name"])
-    return JsonResponse({"branches": branch_list, "departments": departments, "clients": clients})
+    paginator = Paginator(data, selected_rows_int)
+    page = request.GET.get('page')
+    try:
+        page_obj = paginator.page(page)
+    except PageNotAnInteger:
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
+
+    return JsonResponse({
+        'results': list(page_obj.object_list),
+        'departments': department_list,
+        'total_records': original_count,
+        'filtered_count': len(data),
+        'total_balance': total_balance,
+        'total_debit': total_debit,
+        'total_credit': total_credit,
+        'current_page': page_obj.number,
+        'num_pages': paginator.num_pages,
+        'selected_rows': selected_rows_int,
+    })
+
+
+def debtors1_list(request):
+    api_url = "https://accmaster.imcbs.com/api/sync/acc-master/"
+    dept_api_url = "https://accmaster.imcbs.com/api/sync/acc-departments/"
+    data = []
+    error_message = None
+
+    # Fetch department name map {department_id: department_name} filtered by client
+    dept_map = {}
+    try:
+        dept_response = requests.get(dept_api_url, timeout=30)
+        dept_response.raise_for_status()
+        dept_json = dept_response.json()
+        if isinstance(dept_json, list):
+            dept_list = dept_json
+        elif isinstance(dept_json, dict):
+            dept_list = dept_json.get('data', [])
+        else:
+            dept_list = []
+        for dept in dept_list:
+            if str(dept.get('client_id', '')) != 'GW9Q6NQQ5ONRU':
+                continue
+            dept_id = str(dept.get('department_id', '')).strip()
+            name = str(dept.get('department', '')).strip()
+            if dept_id and name:
+                dept_map[dept_id] = name
+    except Exception:
+        pass  # dept_map stays empty; codes will show as-is
+
+    try:
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        json_data = response.json()
+
+        if isinstance(json_data, list):
+            raw_data = json_data
+        elif isinstance(json_data, dict):
+            raw_data = json_data.get('data', [])
+        else:
+            raw_data = []
+            error_message = "Unexpected JSON structure."
+
+        for item in raw_data:
+            if str(item.get('client_id', '')) != 'GW9Q6NQQ5ONRU':
+                continue
+            if str(item.get('super_code', '')) != 'DEBTO':
+                continue
+            item['name'] = item.get('name', '').strip()
+            debit = float(item.get('debit') or 0)
+            credit = float(item.get('credit') or 0)
+            item['balance'] = debit - credit
+
+            # Resolve department name using openingdepartment as department_id
+            dept_id = str(item.get('openingdepartment', '') or '').strip()
+            item['openingdepartment'] = dept_id
+            item['department_name'] = dept_map.get(dept_id, dept_id)
+
+            data.append(item)
+
+    except requests.exceptions.Timeout:
+        error_message = "API request timed out"
+    except requests.exceptions.ConnectionError:
+        error_message = "Could not connect to API"
+    except requests.exceptions.HTTPError as e:
+        error_message = f"HTTP Error: {e}"
+    except Exception as e:
+        error_message = f"Unexpected error: {str(e)}"
+
+    if error_message:
+        return JsonResponse({'error': error_message, 'results': [], 'departments': []}, status=502)
+
+    query = request.GET.get('q', '').strip()
+    min_balance = request.GET.get('min_balance', '1')
+    selected_department = request.GET.get('department', '')
+    selected_rows = request.GET.get('rows', '15')
+
+    original_count = len(data)
+
+    # Department dropdown: all departments for this client from dept API, sorted by name
+    department_list = sorted(
+        [[dept_id, name] for dept_id, name in dept_map.items()],
+        key=lambda x: x[1]
+    )
+
+    # Search filter
+    if query:
+        search_terms = query.lower().split()
+        filtered_data = []
+        for item in data:
+            searchable_fields = [
+                str(item.get('code', '')),
+                str(item.get('name', '')),
+                str(item.get('super_code', '')),
+                str(item.get('opening_balance', '')),
+                str(item.get('debit', '')),
+                str(item.get('credit', '')),
+                str(item.get('balance', '')),
+                str(item.get('place', '')),
+                str(item.get('phone2', '')),
+                str(item.get('openingdepartment', '')),
+                str(item.get('department_name', '')),
+            ]
+            combined_text = ' '.join(searchable_fields).lower()
+            if all(term in combined_text for term in search_terms):
+                filtered_data.append(item)
+        data = filtered_data
+
+    # Department filter
+    if selected_department:
+        data = [item for item in data if item.get('openingdepartment', '') == selected_department]
+
+    # Minimum balance filter
+    if min_balance:
+        try:
+            min_balance_value = float(min_balance)
+            data = [item for item in data if float(item.get('balance') or 0) >= min_balance_value]
+        except ValueError:
+            pass
+
+    # Totals
+    total_balance = sum(float(item.get('balance') or 0) for item in data)
+    total_debit = sum(float(item.get('debit') or 0) for item in data)
+    total_credit = sum(float(item.get('credit') or 0) for item in data)
+
+    data.sort(key=lambda x: x.get('name', '').lower())
+
+    # Rows per page
+    try:
+        selected_rows_int = int(selected_rows)
+        if selected_rows_int not in [10, 15, 20, 25, 50, 100, 200]:
+            selected_rows_int = 15
+    except ValueError:
+        selected_rows_int = 15
+
+    paginator = Paginator(data, selected_rows_int)
+    page = request.GET.get('page')
+    try:
+        page_obj = paginator.page(page)
+    except PageNotAnInteger:
+        page_obj = paginator.page(1)
+    except EmptyPage:
+        page_obj = paginator.page(paginator.num_pages)
+
+    return JsonResponse({
+        'results': list(page_obj.object_list),
+        'departments': department_list,
+        'total_records': original_count,
+        'filtered_count': len(data),
+        'total_balance': total_balance,
+        'total_debit': total_debit,
+        'total_credit': total_credit,
+        'current_page': page_obj.number,
+        'num_pages': paginator.num_pages,
+        'selected_rows': selected_rows_int,
+    })

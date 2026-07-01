@@ -23,6 +23,8 @@ class FeederSerializer(serializers.ModelSerializer):
             "totalCost":      "total_cost",
             "createdBy":      "created_by",
             "admStatus":      "adm_status",
+            "modules":        "modules",
+            "corporate":      "corporate",
         }
         # Fields where an empty string should become None
         nullable_fields = {"no_of_system", "install_date", "software_amount", "total_cost"}
@@ -33,6 +35,9 @@ class FeederSerializer(serializers.ModelSerializer):
             # Normalise empty strings → None for nullable numeric/date fields
             if snake_key in nullable_fields and v == "":
                 v = None
+            # Ensure modules is always a list
+            if snake_key == "modules" and not isinstance(v, list):
+                v = [v] if v else []
             # Reformat date from DD-MM-YYYY → YYYY-MM-DD if needed
             if snake_key == "install_date" and v and isinstance(v, str) and v.count("-") == 2:
                 parts = v.split("-")

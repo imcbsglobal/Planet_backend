@@ -13,4 +13,7 @@ urlpatterns = [
     path("api/feeder/", include("feeder.urls")),
     path("debtors/", include("debtors.urls")),
     path('api/clientmaster/', include('clientmaster.urls')),
+    path('api/installation/', include('installation.urls')),
+    path('api/collection/', include('collection.urls')),
+    path("api/", include("claims.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

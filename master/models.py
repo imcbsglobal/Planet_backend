@@ -54,3 +54,8 @@ class SP(BaseModel):
 class Corporate(BaseModel):
     class Meta(BaseModel.Meta):
         db_table = "master_corporate"
+
+
+class Module(BaseModel):
+    class Meta(BaseModel.Meta):
+        db_table = "master_module"

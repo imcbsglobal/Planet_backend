@@ -41,10 +41,17 @@ class FeederListCreateView(APIView):
 
     def post(self, request):
         data = request.data.copy()
-        # Set created_by safely (works with or without auth)
-        if "createdBy" not in data or not data["createdBy"]:
-            user = getattr(request, "user", None)
-            data["createdBy"] = getattr(user, "username", "") or "Admin"
+        # If frontend didn't supply createdBy, extract username from the custom token
+        # Token format: "Bearer local_{user_id}_{username}"
+        if not data.get("createdBy"):
+            auth_header = request.META.get("HTTP_AUTHORIZATION", "")
+            if auth_header.startswith("Bearer local_"):
+                # strip "Bearer local_" → "{id}_{username}", split on first _ only
+                remainder = auth_header[len("Bearer local_"):]
+                _, _, uname = remainder.partition("_")   # skip id part
+                data["createdBy"] = uname or "Admin"
+            else:
+                data["createdBy"] = "Admin"
 
         serializer = FeederSerializer(data=data)
         if serializer.is_valid():

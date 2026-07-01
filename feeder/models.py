@@ -4,11 +4,8 @@ from django.db import models
 
 class Feeder(models.Model):
     STATUS_CHOICES = [
-        ("Pending",         "Pending"),
-        ("Accepted",        "Accepted"),
-        ("Rejected",        "Rejected"),
-        ("Key Uploaded",    "Key Uploaded"),
-        ("Under Progress",  "Under Progress"),
+        ("Pending",   "Pending"),
+        ("Installed", "Installed"),
     ]
     ADM_STATUS_CHOICES = [
         ("Pending",  "Pending"),
@@ -36,6 +33,7 @@ class Feeder(models.Model):
     software        = models.CharField(max_length=255, blank=True, null=True)
     business_nature = models.CharField(max_length=255, blank=True, null=True)
     branch          = models.CharField(max_length=255, blank=True, null=True)
+    corporate       = models.CharField(max_length=255, blank=True, null=True)
     no_of_system    = models.PositiveIntegerField(blank=True, null=True)
     pin_code        = models.CharField(max_length=10,  blank=True, null=True)
     country         = models.CharField(max_length=100, blank=True, null=True)
@@ -43,6 +41,7 @@ class Feeder(models.Model):
     remark          = models.TextField(blank=True, null=True)
     software_amount = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     total_cost      = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
+    modules         = models.JSONField(default=list, blank=True)  # list of module names
 
     # Meta
     status          = models.CharField(max_length=20, choices=STATUS_CHOICES, default="Pending")

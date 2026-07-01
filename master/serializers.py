@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Branch, Software, BusinessNature, District, State, Country, SP, Corporate
+from .models import Branch, Software, BusinessNature, District, State, Country, SP, Corporate, Module
 
 
 class BranchSerializer(serializers.ModelSerializer):
@@ -47,4 +47,10 @@ class SPSerializer(serializers.ModelSerializer):
 class CorporateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Corporate
+        fields = ["id", "code", "name", "created_at", "updated_at"]
+
+
+class ModuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Module
         fields = ["id", "code", "name", "created_at", "updated_at"]

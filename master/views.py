@@ -1,9 +1,10 @@
 from rest_framework import viewsets
 from rest_framework.permissions import AllowAny
-from .models import Branch, Software, BusinessNature, District, State, Country, SP, Corporate
+from .models import Branch, Software, BusinessNature, District, State, Country, SP, Corporate, Module
 from .serializers import (
     BranchSerializer, SoftwareSerializer, BusinessNatureSerializer,
-    DistrictSerializer, StateSerializer, CountrySerializer, SPSerializer, CorporateSerializer,
+    DistrictSerializer, StateSerializer, CountrySerializer, SPSerializer,
+    CorporateSerializer, ModuleSerializer,
 )
 
 
@@ -52,4 +53,10 @@ class SPViewSet(viewsets.ModelViewSet):
 class CorporateViewSet(viewsets.ModelViewSet):
     queryset = Corporate.objects.all()
     serializer_class = CorporateSerializer
+    permission_classes = [AllowAny]
+
+
+class ModuleViewSet(viewsets.ModelViewSet):
+    queryset = Module.objects.all()
+    serializer_class = ModuleSerializer
     permission_classes = [AllowAny]
